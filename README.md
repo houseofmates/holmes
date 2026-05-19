@@ -8,7 +8,7 @@
 
 ---
 
-## what is .holmes?
+<h2 align="center">what is .holmes?</h2>
 
 **.holmes** is a minimal binary container for any media file. it wraps your
 original file inside a tiny 18+byte header — the file itself is untouched, just
@@ -32,7 +32,7 @@ the end of the header.
 
 ---
 
-## where does this idea come from?
+<h2 align="center">where does this idea come from?</h2>
 
 file containers with routing headers are ancient and obvious — tar files have
 their magic bytes at offset 0, PNG and JPEG use structured headers that every
@@ -51,7 +51,7 @@ in practice.
 
 ---
 
-## convert and extract
+<h2 align="center">convert and extract</h2>
 
 ```bash
 # convert an entire folder of media to .holmes
@@ -66,7 +66,7 @@ python3 holmes.py ~/archive/ --delete
 
 ---
 
-## open .holmes files with the system handler
+<h2 align="center">open .holmes files with the system handler</h2>
 
 double-clicking a `.holmes` file opens it in the correct default application:
 
@@ -82,7 +82,7 @@ see [`holmes-open`](holmes-open) for the system handler script.
 
 ---
 
-## why bother?
+<h2 align="center">why bother?</h2>
 
 because the real world is messier than ideal filesystems suggest:
 
@@ -97,7 +97,7 @@ because the real world is messier than ideal filesystems suggest:
 
 ---
 
-## file layout
+<h2 align="center">file layout</h2>
 
 ```
 holmes/
@@ -107,7 +107,7 @@ holmes/
 └── holmes-info        inspect a .holmes header without extracting
 ```
 
-Every tool in this repo is a single Python file. zero third-party dependencies
+every tool in this repo is a single python file. zero third-party dependencies
 in the core tools. `file` command is the only optional external dependency for
 content detection in the handler.
 

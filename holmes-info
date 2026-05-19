@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""
+holmes-info — print human-readable info about a .holmes file without extracting.
+
+usage:
+  holmes-info <file.holmes> [file.holmes ...]
+"""
+
+import sys
+import struct
+import json
+import os
+from pathlib import Path
+
+MAGIC = b'HOLMES'
+
+
+def info(path: str) -> dict | None:
+    try:
+        data = Path(path).read_bytes()
+    except Exception as e:
+        print(f'❌ Cannot read {path}: {e}', file=sys.stderr)
+        return None
+
+    if data[:6] != MAGIC:
+        print(f'❌ {path}: bad magic bytes', file=sys.stderr)
+        return None
+    if len(data) < 10:
+        print(f'❌ {path}: file truncated', file=sys.stderr)
+        return None
+
+    version = struct.unpack('>H', data[6:8])[0]
+    mime_len = struct.unpack('>H', data[8:10])[0]
+    if len(data) < 10 + mime_len + 8:
+        print(f'❌ {path}: file truncated', file=sys.stderr)
+        return None
+
+    mime_str = data[10:10 + mime_len].decode('ascii', errors='replace')
+    payload_start = 10 + mime_len + 8
+    payload_len = struct.unpack('>Q', data[10 + mime_len:payload_start])[0]
+
+    file_size = os.path.getsize(path)
+    overhead = payload_start
+    category = mime_str.split('/')[0] if '/' in mime_str else 'unknown'
+
+    return {
+        'file': path,
+        'mime_type': mime_str,
+        'category': category,
+        'version': version,
+        'padding': payload_start,
+        'payload_bytes': payload_len,
+        'total_bytes': file_size,
+        'ratio_pct': round(payload_len / file_size * 100, 1) if file_size else 0,
+    }
+
+
+def main():
+    import argparse
+    p = argparse.ArgumentParser(description='show info about .holmes files')
+    p.add_argument('files', nargs='+')
+    p.add_argument('--json', action='store_true', help='machine-readable output')
+    args = p.parse_args()
+
+    results = []
+    for path in args.files:
+        result = info(path)
+        if result:
+            results.append(result)
+
+    if args.json:
+        print(json.dumps(results, indent=2))
+    else:
+        for r in results:
+            print(f"\n📦 {r['file']}")
+            print(f"  mime type   : {r['mime_type']}")
+            print(f"  category    : {r['category']}")
+            print(f"  version     : {r['version']}")
+            print(f"  padding     : {r['padding']} bytes")
+            print(f"  payload     : {r['payload_bytes']:,} bytes")
+            print(f"  total size  : {r['total_bytes']:,} bytes")
+            print(f"  ratio       : {r['ratio_pct']}% media")
+
+    sys.exit(0 if results else 1)
+
+
+if __name__ == '__main__':
+    main()

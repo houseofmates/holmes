@@ -113,6 +113,6 @@ content detection in the handler.
 
 ---
 
-## license
+<h2 align="center">license</h2>
 
 MIT — do whatever you want with it.

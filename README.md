@@ -11,7 +11,7 @@
 <h2 align="center">what is .holmes?</h2>
 
 **.holmes** is a minimal binary container for any media file. it wraps your
-original file inside a tiny 18+byte header — the file itself is untouched, just
+original file inside a tiny 18+ byte header — the file itself is untouched, just
 prefixed with enough self-description that software downstream can act on it
 intelligently without guessing, without extension checks, and without registry
 entries.
@@ -34,17 +34,17 @@ the end of the header.
 
 <h2 align="center">where does this idea come from?</h2>
 
-file containers with routing headers are ancient and obvious — tar files have
+file containers with routing headers are ancient and obvious. tar files have
 their magic bytes at offset 0, PNG and JPEG use structured headers that every
 decoder in the world respects, and formats like zip, xar, and appimage have been
 doing exactly this for decades.
 
-**.holmes** is a deliberate implementation of that same pattern but minimal —
+**.holmes** is a deliberate implementation of that same pattern but minimal,
 focused specifically on media serving and routing. the header contains one
 piece of routing intelligence: the MIME type of the payload. that is all the
 routing information any smart consumer needs.
 
-It's a "file router" in the same spirit as older routing formats: put the
+it's a "file router" in the same spirit as older routing formats: put the
 instruction at the front of the stream and the content after, and let the
 receiver act accordingly. nothing novel in principle, but deliberately minimal
 in practice.

@@ -3,116 +3,234 @@
 <p align="center">
   a self-describing media container format
   <br>
-  <em>a new take on an old, elegant idea</em>
+  <em>a robust, minimal implementation of a timeless idea</em>
 </p>
 
 ---
 
-<h2 align="center">what is .holmes?</h2>
+## what is .holmes?
 
-**.holmes** is a minimal binary container for any media file. it wraps your
-original file inside a tiny 18+ byte header — the file itself is untouched, just
-prefixed with enough self-description that software downstream can act on it
-intelligently without guessing, without extension checks, and without registry
-entries.
+**.holmes** is a minimal binary container for any media file. It wraps your
+original file inside a small header that declares the MIME type and length,
+and (in v2) includes a CRC-32 checksum to detect accidental corruption.
+
+The payload is the exact original media file — zero transformation,
+zero compression, zero encryption. All smarts live in the header.
 
 ```
-offset  length  field
-0       6       magic:    "HOLMES"
-6       2       version:  uint16 big-endian (currently 1)
-8       2       mime_len: uint16 big-endian = N
-10      N       mime string (ascii)
-10+N   8       payload_len: uint64 big-endian = M
-10+N+8 M       payload (raw original media bytes, zero alteration)
+offset  size  field
+0       6     magic:          "HOLMES"
+6       2     version:        uint16 (big-endian)   ← 1 = legacy, 2 = current
+8       2     mime_len:       uint16 (big-endian)
+10      N     mime:           ASCII MIME type (validated)
+10+N    8     payload_len:    uint64 (big-endian)
+10+N+12 4     crc32:          uint32 (big-endian, IEEE 802.3)  ← v2 only
+10+N+16 M     payload:        raw media bytes, length = payload_len
 ```
 
-that's it. the payload is the exact file you wrapped — bytes for byte, unmodified.
-opening a .holmes is just: read 10+N+8 header bytes, then copy M bytes past
-the end of the header.
+- **v1** (legacy): header = 18 + N bytes, no CRC-32 field  
+- **v2** (current): header = 30 + N bytes, includes CRC-32
+
+All multi-byte integers are **big-endian**. The format is deliberately
+minimal: one media file per container, no streaming, no multi-file support.
 
 ---
 
-<h2 align="center">where does this idea come from?</h2>
+## why this format?
 
-file containers with routing headers are ancient and obvious. tar files have
-their magic bytes at offset 0, PNG and JPEG use structured headers that every
-decoder in the world respects, and formats like zip, xar, and appimage have been
-doing exactly this for decades.
+File containers with routing headers are old and obvious:  
+- tar (1979) puts a header at the front of each entry  
+- PNG/JPEG use structured headers that every decoder respects  
+- ZIP, xar, AppImage, and many others prefix content with metadata  
 
-**.holmes** is a deliberate implementation of that same pattern but minimal,
-focused specifically on media serving and routing. the header contains one
-piece of routing intelligence: the MIME type of the payload. that is all the
-routing information any smart consumer needs.
+Holmes applies that same principle to **media serving and routing**:  
+put the MIME type (the routing signal) at the very start of the stream,
+followed by the unaltered payload. A receiver can instantly know how to
+handle the bytes without guessing from extensions, without consulting a
+registry, and without scanning the file.
 
-it's a "file router" in the same spirit as older routing formats: put the
-instruction at the front of the stream and the content after, and let the
-receiver act accordingly. nothing novel in principle, but deliberately minimal
-in practice.
+This solves real‑world problems:
 
----
+- **Extension mismatch**: `photo.jpg.holmes` has no extension that signals
+  its true content. Standard tools need help — holmes-open provides it.
+- **Dark media buckets**: a folder of renamed files loses its routing
+  information. Holmes restores it at byte zero.
+- **Integrity**: the optional CRC-32 lets you detect corruption
+  (transmission errors, bit rot) before wasting time on a broken file.
 
-<h2 align="center">convert and extract</h2>
-
-```bash
-# convert an entire folder of media to .holmes
-python3 holmes.py ~/my-photos/
-
-# extract a single .holmes file
-python3 holmes-extract photo.holmes output.jpg
-
-# convert and DELETE originals after verify
-python3 holmes.py ~/archive/ --delete
-```
+It’s not novel in principle, but it is **deliberately minimal** and
+**practically useful**.
 
 ---
 
-<h2 align="center">open .holmes files with the system handler</h2>
+## validation & safety
 
-double-clicking a `.holmes` file opens it in the correct default application:
+Unlike naïve formats that accept any bytes as a MIME type, Holmes **validates**
+the MIME string against a whitelist:
 
-- `image/png` payload → eye of GNOME / image viewer
-- `video/mp4` payload → VLC / default video player
-- `audio/flac` payload → Rhythmbox / default audio player
+- Only MIME types beginning with `image/`, `video/`, or `audio/` are allowed.
+- This prevents wrapping of arbitrary file types and keeps the format focused
+  on media.
 
-**renamed media files also work.** if a file has no HOLMES header (e.g.
-`photo.png` renamed to `photo.holmes`), the handler detects the real content
-type via `file --mime-type` and opens it directly — no conversion needed.
-
-see [`holmes-open`](holmes-open) for the system handler script.
+The header also includes a length-prefixed MIME string (no null‑terminator),
+avoiding ambiguity.
 
 ---
 
-<h2 align="center">why bother?</h2>
+## integrity checking (v2)
 
-because the real world is messier than ideal filesystems suggest:
+Version 2 adds a **CRC-32 (IEEE 802.3)** of the payload, stored as a big-
+endian `uint32` after the payload length. This lets you detect:
 
-- **extension mismatch:** "my-photo.jpg.holmes" has no extension to signal its
-  content. standard file managers and applications need someone to step in —
-  holmes-open fills that role.
-- **dark media buckets:** a "media bucket" folder full of renamed files loses its
-  routing information. holmes restores it at byte zero.
-- **routing headers are timeless:** tar did it in 1979. PNG did it in 1996.
-  appimage did it in 2008. holmes does it for media in 2025 with the simplest
-  possible header — just enough to say "this is what I am."
+- Accidental corruption during transfer or storage
+- Truncation (if the file is shorter than expected)
+- Bit‑flips in the payload
+
+The CRC is **not** cryptographically secure; it is not meant to defend
+against tampering, only against accidental errors.
+
+Readers should accept both v1 (no CRC) and v2 (with CRC) for backward
+compatibility. Writers are encouraged to use v2.
 
 ---
 
-<h2 align="center">file layout</h2>
+## endianness & portability
+
+All integer fields (version, mime_len, payload_len, crc32) are stored in
+**big‑endian (network) byte order**. This is the same order used by
+IPv4/IPv6, TCP/UDP headers, PNG, JPEG, and many other formats.
+
+Implementations on little‑endian systems must convert to/from host byte
+order using the standard `htobe16/32/64` and `be16toh/32/64` functions (or
+equivalent). The provided C header (`spec/holmes_format.h`) includes
+helpers for this.
+
+---
+
+## scope
+
+Holmes wraps **exactly one** media file per container. It is **not**
+designed for:
+
+- Multi‑file archives → use tar, zip, etc.
+- Streaming with unknown length → use chunked transfer or other streaming
+  formats
+- Encryption or compression → apply those layers outside if needed
+
+These are considered out of scope for v2. Future versions may introduce
+extensions, but v2 stays focused on simplicity and robustness for the
+single‑file use case.
+
+---
+
+## file layout
 
 ```
 holmes/
 ├── holmes.py          batch converter (folder → .holmes)
 ├── holmes-extract     extract payload from a .holmes file
 ├── holmes-open        system handler (xdg-open integration)
-└── holmes-info        inspect a .holmes header without extracting
+├── holmes-info        inspect a .holmes header without extracting
+├── spec/
+│   ├── holmes_format.h   C header with binary layout & helpers
+│   └── SPEC.md           full format specification (this document)
+└── tests/
+    └── test_holmes.py   Python test suite (roundtrip, CRC, errors)
 ```
 
-every tool in this repo is a single python file. zero third-party dependencies
-in the core tools. `file` command is the only optional external dependency for
-content detection in the handler.
+Every tool is a single Python file with **zero third‑party dependencies**
+in the core. The optional `file` command is used by the handler for
+content detection when no HOLMES magic is present (renamed media files).
 
 ---
 
-<h2 align="center">license</h2>
+## usage
 
-MIT — do whatever you want with it.
+```bash
+# convert a folder of media to .holmes (v2, with CRC)
+python3 holmes.py ~/my-photos/
+
+# convert and delete originals after verifying CRC
+python3 holmes.py ~/archive/ --delete
+
+# extract a single file
+python3 holmes-extract photo.holmes output.jpg
+
+# inspect a .holmes file without extracting
+python3 holmes-info photo.holmes
+
+# force legacy v1 output (no CRC) – useful for maximum compatibility
+python3 holmes.py ~/data/ --legacy
+```
+
+---
+
+## holmes-open – system handler
+
+Double‑clicking a `.holmes` file (or selecting “Open With”) launches the
+correct default application:
+
+- `image/png` → eye of GNOME / image viewer
+- `video/mp4` → VLC / default video player
+- `audio/flac` → Rhythmbox / default audio player
+
+**Renamed media files also work.** If a file lacks the HOLMES magic (e.g.
+`photo.png` was renamed to `photo.holmes`), the handler detects the real
+MIME type via the `file` command and opens the original file directly —
+no conversion needed.
+
+The handler is cross‑platform:
+
+- Linux: uses `xdg-open`
+- macOS: uses `open`
+- Windows: uses `os.startfile`
+
+It launches the application **non‑blocking** and cleans up any temporary
+extracted files on exit.
+
+See [`holmes-open`](holmes-open) for the implementation.
+
+---
+
+## test suite
+
+Run the included test suite to verify roundtrip integrity, CRC
+detection, MIME validation, and error handling:
+
+```bash
+python3 -m pytest tests/          # if pytest is available
+# or
+python3 tests/test_holmes.py
+```
+
+The tests cover:
+
+- Roundtrip conversion (v2 and v1) – byte‑for‑byte identity
+- CRC-32 injection and detection
+- Rejection of non‑media MIME types
+- Proper handling of renamed media files
+- Header info output
+
+---
+
+## files
+
+| file | purpose |
+|---|---|
+| `holmes.py` | batch converter (folder → .holmes) |
+| `holmes-extract` | extract payload from a .holmes file |
+| `holmes-open` | xdg-open / open / startfile handler with magic‑byte routing |
+| `holmes-info` | print header info without extracting |
+| `spec/holmes_format.h` | C header with binary layout and endianness helpers |
+| `spec/SPEC.md` | full format specification (this document) |
+| `tests/test_holmes.py` | Python test suite |
+
+---
+
+## license
+
+MIT – see the LICENSE file.
+
+---
+
+*holmes: because sometimes the simplest idea — a header that says “this is what I am” — is all you need.*

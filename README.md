@@ -34,7 +34,7 @@ minimal: one media file per container, no streaming, no multi-file support.
 
 ---
 
-<h2 align="center">prior art</h2>
+<h2 align="center">why .holmes?</h2>
 
 file containers with routing headers are old and obvious:
 * tar (1979) puts a header at the front of each entry

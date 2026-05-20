@@ -5,11 +5,9 @@ holmes-info — print human-readable info about a .holmes file without extractin
 usage:
   holmes-info <file.holmes> [file.holmes ...]
 """
-
 import sys
 import struct
-import json
-import os
+import hashlib
 from pathlib import Path
 
 MAGIC = b'HOLMES'
@@ -18,70 +16,84 @@ MAGIC = b'HOLMES'
 def info(path: str) -> dict | None:
     try:
         data = Path(path).read_bytes()
-    except Exception as e:
-        print(f'❌ Cannot read {path}: {e}', file=sys.stderr)
+    except Exception as exc:
+        print(f'❌  Cannot read {path}: {exc}', file=sys.stderr)
         return None
 
     if data[:6] != MAGIC:
-        print(f'❌ {path}: bad magic bytes', file=sys.stderr)
+        print(f'❌  {path}: bad magic bytes (expected HOLMES, got {data[:6]!r})', file=sys.stderr)
         return None
     if len(data) < 10:
-        print(f'❌ {path}: file truncated', file=sys.stderr)
+        print(f'❌  {path}: file truncated (< 10 bytes)', file=sys.stderr)
         return None
 
     version = struct.unpack('>H', data[6:8])[0]
     mime_len = struct.unpack('>H', data[8:10])[0]
-    if len(data) < 10 + mime_len + 8:
-        print(f'❌ {path}: file truncated', file=sys.stderr)
-        return None
-
     mime_str = data[10:10 + mime_len].decode('ascii', errors='replace')
-    payload_start = 10 + mime_len + 8
-    payload_len = struct.unpack('>Q', data[10 + mime_len:payload_start])[0]
 
-    file_size = os.path.getsize(path)
+    payload_len_raw = 10 + mime_len + 8
+
+    has_crc = False
+    crc_stored = None
+    if version >= 2 and len(data) >= payload_len_raw + 4:
+        crc_stored = struct.unpack('>I', data[payload_len_raw:payload_len_raw + 4])[0]
+        has_crc = True
+        payload_len_offset = payload_len_raw + 4
+    else:
+        payload_len_offset = payload_len_raw
+
+    payload_len = struct.unpack('>Q', data[10 + mime_len:payload_len_raw])[0]
+    payload_start = payload_len_offset
+    file_size = len(data)
+
+    # check MIME against whitelist
+    allowed = mime_str.startswith(('image/', 'video/', 'audio/'))
+    mime_ok = '✓' if allowed else '✗ (not a recognised media type)'
+
+    # size sanity
+    end = payload_start + payload_len
+    size_ok = end <= file_size
+    present = f'yes ({payload_len:,} bytes)' if size_ok else 'TRUNCATED'
+
+    # CRC verification
+    crc_line = ''
+    if has_crc and size_ok:
+        payload = data[payload_start:end]
+        computed = 0xFFFFFFFF & zlib := __import__('zlib').crc32(payload)
+        match = computed == crc_stored
+        crc_line = f'\n    CRC32   : 0x{crc_stored:08x}  {"✓ match" if match else "✗ MISMATCH!  computed=0x{computed:08x}"}'
+
+    size_pct = payload_len / file_size * 100 if file_size else 0
     overhead = payload_start
-    category = mime_str.split('/')[0] if '/' in mime_str else 'unknown'
 
+    print(f"\n📦  {path}")
+    print(f"    {'─' * 44}")
+    print(f"    version       : {version}  {'(current)' if version == 2 else '(legacy)'}")
+    print(f"    MIME type     : {mime_str}  {mime_ok}")
+    print(f"    payload       : {present}")
+    print(f"    file size     : {file_size:,} bytes")
+    print(f"    overhead      : {overhead} bytes ({size_pct:.1f}% of total)")
+    print(f"    MIME length   : {mime_len} bytes")
+    if has_crc:
+        print(f"    CRC32 field   : 0x{crc_stored:08x}{crc_line if size_ok and has_crc else '  (payload truncated, cannot verify)'}")
+    if not has_crc:
+        print(f'    CRC32 field   : absent  (v{version} has no integrity check — upgrade with `holmes.py --no-legacy`)')
     return {
-        'file': path,
-        'mime_type': mime_str,
-        'category': category,
         'version': version,
-        'padding': payload_start,
-        'payload_bytes': payload_len,
-        'total_bytes': file_size,
-        'ratio_pct': round(payload_len / file_size * 100, 1) if file_size else 0,
+        'mime_type': mime_str,
+        'payload_len': payload_len,
+        'file_size': file_size,
+        'has_crc': has_crc,
+        'crc_stored': crc_stored,
     }
 
 
 def main():
-    import argparse
-    p = argparse.ArgumentParser(description='show info about .holmes files')
-    p.add_argument('files', nargs='+')
-    p.add_argument('--json', action='store_true', help='machine-readable output')
-    args = p.parse_args()
-
-    results = []
-    for path in args.files:
-        result = info(path)
-        if result:
-            results.append(result)
-
-    if args.json:
-        print(json.dumps(results, indent=2))
-    else:
-        for r in results:
-            print(f"\n📦 {r['file']}")
-            print(f"  mime type   : {r['mime_type']}")
-            print(f"  category    : {r['category']}")
-            print(f"  version     : {r['version']}")
-            print(f"  padding     : {r['padding']} bytes")
-            print(f"  payload     : {r['payload_bytes']:,} bytes")
-            print(f"  total size  : {r['total_bytes']:,} bytes")
-            print(f"  ratio       : {r['ratio_pct']}% media")
-
-    sys.exit(0 if results else 1)
+    if len(sys.argv) < 2:
+        print(f'usage: {sys.argv[0]} <file.holmes> [file.holmes ...]', file=sys.stderr)
+        sys.exit(1)
+    for path in sys.argv[1:]:
+        info(path)
 
 
 if __name__ == '__main__':

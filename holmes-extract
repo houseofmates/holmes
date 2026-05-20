@@ -1,63 +1,140 @@
 #!/usr/bin/env python3
 """
 holmes-extract — extract the inner media payload from a .holmes file.
+Supports both v1 (no CRC) and v2 (with CRC32) formats.
 
 usage:
   holmes-extract <file.holmes> [output_path]
 
 if output_path is not given, writes to stdout (binary).
+Use -i / --info to print header info without extracting.
 """
 
 import sys
 import struct
 import argparse
+import zlib
 from pathlib import Path
 
 MAGIC = b'HOLMES'
 
 
 def parse(data: bytes) -> dict:
+    """Parse holmes header. Accepts v1 and v2."""
     if data[:6] != MAGIC:
         raise ValueError('not a holmes file')
+    if len(data) < 10:
+        raise ValueError('file truncated')
     version = struct.unpack('>H', data[6:8])[0]
     mime_len = struct.unpack('>H', data[8:10])[0]
     mime_str = data[10:10 + mime_len].decode('ascii')
-    payload_start = 10 + mime_len + 8
-    payload_len = struct.unpack('>Q', data[10 + mime_len:payload_start])[0]
+    payload_start_raw = 10 + mime_len + 8
+
+    crc_offset = 0
+    if version >= 2 and len(data) >= payload_start_raw + 4:
+        # v2: CRC32 present after payload_len
+        crc_stored = struct.unpack('>I', data[payload_start_raw:payload_start_raw + 4])[0]
+        crc_offset = 4
+    else:
+        crc_stored = None
+
+    payload_start = payload_start_raw + crc_offset
+    payload_len = struct.unpack('>Q', data[10 + mime_len:payload_start_raw])[0]
     return {
         'version': version,
         'mime_type': mime_str,
+        'mime_len': mime_len,
         'payload_len': payload_len,
         'payload_start': payload_start,
+        'has_crc': crc_stored is not None,
+        'crc_stored': crc_stored,
     }
 
 
-def extract(path: str, out: str | None = None) -> dict:
+def verify_crc(payload: bytes, crc_stored: int) -> bool:
+    """Verify payload against stored CRC32. Returns True if match or no CRC."""
+    if crc_stored is None:
+        return True
+    return 0xFFFFFFFF & zlib.crc32(payload) == crc_stored
+
+
+def extract(path: str, out: str | None = None, verify: bool = True) -> dict:
     data = Path(path).read_bytes()
     header = parse(data)
-    payload = data[header['payload_start']:header['payload_start'] + header['payload_len']]
-    if len(payload) != header['payload_len']:
+
+    start = header['payload_start']
+    end = start + header['payload_len']
+    if end > len(data):
         raise ValueError(
-            f"payload truncated: expected {header['payload_len']}, got {len(payload)}"
+            f'payload truncated: expected {header["payload_len"]}, got {len(data) - start}'
         )
+    payload = data[start:end]
+
+    if verify and header.get('has_crc') and not verify_crc(payload, header['crc_stored']):
+        actual = 0xFFFFFFFF & zlib.crc32(payload)
+        raise ValueError(
+            f'CRC32 mismatch! stored=0x{header["crc_stored"]:08x}, '
+            f'computed=0x{actual:08x}'
+        )
+
     if out:
         Path(out).write_bytes(payload)
-        return {**header, 'extracted_to': out}
-    return {**header, 'stdout_bytes': len(payload)}
+        return {**header, 'extracted_to': out, 'crc_ok': True}
+    return {**header, 'stdout_bytes': len(payload), 'crc_ok': True}
+
+
+def do_info(paths: list[str]) -> None:
+    for path in paths:
+        data = Path(path).read_bytes()
+        try:
+            h = parse(data)
+        except ValueError as e:
+            print(f"❌  {path}: {e}", file=sys.stderr)
+            continue
+
+        start = h['payload_start']
+        end = start + h['payload_len']
+        actual_payload = data[start:end] if end <= len(data) else b''
+        actual_crc = 0xFFFFFFFF & zlib.crc32(actual_payload) if actual_payload else None
+
+        crc_str = ''
+        if h['has_crc']:
+            match = (actual_crc == h['crc_stored']) if actual_crc is not None else '?'
+            crc_str = f"  crc=0x{h['crc_stored']:08x}  {'✓' if match else '✗ MISMATCH'}"
+
+        size_ok = end <= len(data)
+        size_str = f"  payload={'present' if size_ok else 'TRUNCATED'}"
+
+        print(f"📦  {path}")
+        print(f"    version={h['version']}  mime={h['mime_type']}{crc_str}")
+        print(f"    payload_len={h['payload_len']:,}  mime_len={h['mime_len']}{size_str}")
+        if h['has_crc'] and actual_crc is not None:
+            print(f"    computed_crc=0x{actual_crc:08x}")
 
 
 def main():
     p = argparse.ArgumentParser(description='extract media payload from a .holmes file')
-    p.add_argument('holmes_file', help='.holmes file to extract from')
+    p.add_argument('holmes_file', nargs='+', help='.holmes file(s) to inspect or extract')
     p.add_argument('output', nargs='?', help='output file (default: stdout)')
+    p.add_argument('-i', '--info', action='store_true', help='show header info only')
+    p.add_argument('-n', '--no-verify', action='store_true', help='skip CRC check')
     args = p.parse_args()
 
-    result = extract(args.holmes_file, args.output)
-    if args.output:
-        print(f"extracted {result['payload_len']:,} bytes ({result['mime_type']}) → {args.output}")
-    else:
-        import sys as _sys
-        _sys.stdout.buffer.write(Path(args.holmes_file).read_bytes()[result['payload_start']:result['payload_start'] + result['payload_len']])
+    if args.info:
+        do_info(args.holmes_file)
+        return
+
+    for path in args.holmes_file:
+        try:
+            result = extract(path, args.output, verify=not args.no_verify)
+            if args.output:
+                print(f"extracted {result['payload_len']:,} bytes ({result['mime_type']}) → {args.output}")
+            else:
+                import sys as _sys
+                _sys.stdout.buffer.write(Path(path).read_bytes()[result['payload_start']:result['payload_start'] + result['payload_len']])
+        except Exception as e:
+            print(f"❌  {path}: {e}", file=sys.stderr)
+            sys.exit(1)
 
 
 if __name__ == '__main__':

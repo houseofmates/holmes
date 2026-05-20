@@ -3,19 +3,22 @@
 holmes-open — open a .holmes file or a renamed media file.
 
 Two modes:
-  1. Real .holmes file (HOLMES magic header): parse header, extract payload
-     to a temp file, and open that.
+  1. Real .holmes file (HOLMES magic header): parse header, verify CRC32 (v2),
+     extract payload to a temp file, and open that.
   2. Renamed media file (no HOLMES magic): detect real MIME via `file --mime-type`
      and open the original file directly.
 
-holmes binary layout:
+holmes binary layout (v2):
   offset  length  field
   0       6       magic:    "HOLMES"
-  6       2       version:  uint16 big-endian (currently 1)
+  6       2       version:  uint16 big-endian (currently 2)
   8       2       mime_len: uint16 big-endian = N
   10      N       mime string (ascii)
   10+N   8       payload_len: uint64 big-endian = M
-  10+N+8 M       payload (raw original media bytes)
+  10+N+12 4      crc32:    uint32 big-endian — CRC-32 (IEEE 802.3) of payload
+  10+N+16 M       payload (raw original media bytes, zero alteration)
+
+v1 (legacy, no CRC) is also accepted for reading: crc32 field is simply absent.
 """
 import struct
 import os
@@ -23,11 +26,13 @@ import sys
 import subprocess
 import tempfile
 import mimetypes as mime_module
+import zlib
 import atexit
 from pathlib import Path
 
 MAGIC = b'HOLMES'
-VERSION = 1
+VERSION_CURRENT = 2
+VERSION_LEGACY = 1
 
 MIME_TO_EXT = {
     # images
@@ -46,7 +51,9 @@ MIME_TO_EXT = {
     'audio/opus': '.opus',
 }
 
-# temp files created by the HOLMES-extraction path
+MEDIA_PREFIXES = ('image/', 'video/', 'audio/')
+
+# temp files from the HOLMES-extraction path; cleaned up at exit
 _temp_files: list[str] = []
 
 
@@ -61,18 +68,33 @@ def cleanup() -> None:
 atexit.register(cleanup)
 
 
+# ---------------------------------------------------------------------------
+# platform-aware open
+# ---------------------------------------------------------------------------
+
 def launch_app(path: str) -> None:
-    """Launch the default app for `path` without blocking this script."""
+    """Open path with the system default application, non-blocking."""
+    if sys.platform == 'darwin':
+        cmd = ['open', path]
+    elif sys.platform == 'win32':
+        os.startfile(path)          # type: ignore[attr-defined]
+        return
+    else:
+        cmd = ['xdg-open', path]
     subprocess.Popen(
-        ['xdg-open', path],
+        cmd,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
 
 
-def detect_mime_by_content(path: str) -> str:
-    """Detect MIME type using `file --mime-type`, falling back to extension guess."""
+# ---------------------------------------------------------------------------
+# MIME detection
+# ---------------------------------------------------------------------------
+
+def detect_mime(path: str) -> str:
+    """Detect MIME type using `file --mime-type`, falling back to extension."""
     try:
         result = subprocess.run(
             ['file', '--mime-type', '-b', path],
@@ -88,101 +110,138 @@ def detect_mime_by_content(path: str) -> str:
 
 
 def is_media_mime(mime: str) -> bool:
-    return mime.startswith('image/') or mime.startswith('video/') or mime.startswith('audio/')
+    return any(mime.startswith(p) for p in MEDIA_PREFIXES)
 
 
-def mime_to_extension(mime: str) -> str:
+def mime_to_ext(mime: str) -> str:
     if mime in MIME_TO_EXT:
         return MIME_TO_EXT[mime]
-    guessed = mime_module.guess_extension(mime, strict=False)
-    return guessed if guessed else '.bin'
+    g = mime_module.guess_extension(mime, strict=False)
+    return g if g else '.bin'
 
+
+# ---------------------------------------------------------------------------
+# holmes header
+# ---------------------------------------------------------------------------
 
 def parse_holmes(data: bytes) -> dict:
-    """Parse and validate the HOLMES binary header."""
+    """Parse holmes header. Accepts both v1 and v2."""
     if len(data) < 18:
-        raise ValueError('file too small to contain a holmes header (< 18 bytes)')
+        raise ValueError('file too small to contain a holmes header')
     if data[:6] != MAGIC:
-        raise ValueError('not a holmes file (bad magic bytes)')
+        raise ValueError('not a holmes file')
     version = struct.unpack('>H', data[6:8])[0]
     mime_len = struct.unpack('>H', data[8:10])[0]
-    if len(data) < 10 + mime_len + 8:
-        raise ValueError('file truncated')
+    if version >= 2:
+        # v2: payload_len (8) + crc32 (4) = 12 extra bytes
+        if len(data) < 10 + mime_len + 12:
+            raise ValueError('file truncated')
+        crc_offset = 10 + mime_len + 8
+        crc_stored = struct.unpack('>I', data[crc_offset:crc_offset + 4])[0]
+        payload_len = struct.unpack('>Q', data[10 + mime_len:crc_offset])[0]
+        payload_start = crc_offset + 4
+    else:
+        # v1: only 8 extra bytes (no CRC)
+        if len(data) < 10 + mime_len + 8:
+            raise ValueError('file truncated')
+        crc_stored = None
+        payload_len = struct.unpack('>Q', data[10 + mime_len:10 + mime_len + 8])[0]
+        payload_start = 10 + mime_len + 8
     mime_str = data[10:10 + mime_len].decode('ascii', errors='replace')
-    payload_len = struct.unpack('>Q', data[10 + mime_len:10 + mime_len + 8])[0]
     return {
         'version': version,
         'mime_type': mime_str,
         'payload_len': payload_len,
-        'payload_start': 10 + mime_len + 8,
+        'payload_start': payload_start,
+        'has_crc': crc_stored is not None,
+        'crc_stored': crc_stored,
     }
 
 
-def open_holmes_header(path: str) -> None:
-    """Extract embedded payload from a real .holmes file and open it."""
+def verify_crc(payload: bytes, crc_stored: int | None) -> bool:
+    if crc_stored is None:
+        return True   # v1 — no CRC
+    return (0xFFFFFFFF & zlib.crc32(payload)) == crc_stored
+
+
+# ---------------------------------------------------------------------------
+# open handlers
+# ---------------------------------------------------------------------------
+
+def open_holmes(path: str) -> None:
+    """Extract payload from a real holmes file and open it."""
     data = Path(path).read_bytes()
-    header = parse_holmes(data)
-    payload_start = header['payload_start']
-    payload_len = header['payload_len']
-    payload = data[payload_start:payload_start + payload_len]
-    if len(payload) != payload_len:
+    h = parse_holmes(data)
+    start = h['payload_start']
+    end = start + h['payload_len']
+    if end > len(data):
         raise ValueError(
-            f"payload truncated: expected {payload_len}, got {len(payload)}"
+            f'payload truncated: expected {h["payload_len"]:,} bytes, got {len(data) - start}'
         )
-    ext = mime_to_extension(header['mime_type'])
+    payload = data[start:end]
+
+    # verify CRC before opening
+    if h['has_crc'] and not verify_crc(payload, h['crc_stored']):
+        actual = 0xFFFFFFFF & zlib.crc32(payload)
+        raise ValueError(
+            f'CRC32 integrity check failed!\n'
+            f'  stored:    0x{h["crc_stored"]:08x}\n'
+            f'  computed:  0x{actual:08x}\n'
+            f'  file may be corrupted'
+        )
+
+    ext = mime_to_ext(h['mime_type'])
     tmp = tempfile.NamedTemporaryFile(suffix=ext, prefix='holmes_', delete=False)
     tmp.write(payload)
     tmp.close()
     _temp_files.append(tmp.name)
     launch_app(tmp.name)
-    print(f"opened {header['mime_type']} ({payload_len:,} bytes) -> {tmp.name}")
+    ver = f"v{h['version']}" + (" CRC ✓" if h['has_crc'] else ' no-CRC')
+    print(f"opened {h['mime_type']} ({h['payload_len']:,} bytes, {ver}) → {tmp.name}")
 
 
-def open_renamed_media(path: str, mime: str) -> None:
-    """Open a renamed media file directly — no extraction needed."""
+def open_renamed(path: str, mime: str) -> None:
+    """Open a renamed media file directly — no extraction."""
     launch_app(path)
-    print(f"opened {mime} (renamed media) -> {path}")
+    print(f"opened {mime} (renamed media) → {path}")
 
 
-def show_error(message: str) -> None:
-    """Show a desktop notification and print to stderr."""
-    subprocess.run(
-        ['notify-send', 'holmes-open', message],
-        capture_output=True, check=False
-    )
-    print(f"error: {message}", file=sys.stderr)
+def error(msg: str) -> None:
+    subprocess.run(['notify-send', 'holmes-open', msg], capture_output=True, check=False)
+    print(f'error: {msg}', file=sys.stderr)
 
+
+# ---------------------------------------------------------------------------
+# main
+# ---------------------------------------------------------------------------
 
 def main() -> None:
     if len(sys.argv) < 2:
-        prog = os.path.basename(sys.argv[0])
-        print(f"usage: {prog} <file.holmes>", file=sys.stderr)
+        print(f'usage: {os.path.basename(sys.argv[0])} <file.holmes>', file=sys.stderr)
         sys.exit(1)
 
     path = sys.argv[1]
 
-    # --- fast path: check magic bytes before reading the whole file ---
+    # fast check: first 6 bytes decide which path
     try:
         with open(path, 'rb') as fh:
             magic = fh.read(6)
     except OSError as exc:
-        show_error(str(exc))
+        error(str(exc))
         sys.exit(1)
 
     if magic == MAGIC:
-        # real .holmes container: extract and open
         try:
-            open_holmes_header(path)
+            open_holmes(path)
         except Exception as exc:
-            show_error(str(exc))
+            error(str(exc))
             sys.exit(1)
     else:
-        # renamed media file: detect by content and open directly
-        mime = detect_mime_by_content(path)
+        mime = detect_mime(path)
         if is_media_mime(mime):
-            open_renamed_media(path, mime)
+            open_renamed(path, mime)
         else:
-            show_error(f"not a valid media file (detected: {mime})")
+            error(f'not a valid media file (detected: {mime})')
             sys.exit(1)
 
 

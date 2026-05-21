@@ -115,8 +115,4 @@ python3 holmes-info photo.holmes
 
 <h2 align="center">license</h2>
 
-mit – see the license file.
-
----
-
-*holmes: because sometimes the simplest idea — a header that says "this is what i am" — is all you need.*
+[mit](LICENSE)

@@ -25,8 +25,6 @@ zero compression, zero encryption. all smarts live in the header.</p>
 10+n+16 m     payload:      raw media bytes, length = payload_len
 </code></pre>
 
-header = 30 + n bytes, includes crc-32
-
 <p align="center">all multi-byte integers are <strong>big-endian</strong>. the format is deliberately
 minimal: one media file per container, no streaming, no multi-file support.</p>
 

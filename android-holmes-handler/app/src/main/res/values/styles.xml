@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Holmes</string>
+    <string name="converting">Converting…</string>
+    <string name="converted">Converted to .holmes</string>
+    <string name="convert_failed">Conversion failed: %s</string>
+    <string name="need_all_files">Holmes needs All files access to work with .holmes files. Tap to grant.</string>
+    <string name="opening">Opening .holmes…</string>
+
+    <style name="Theme.AppCompat.Transparent" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:windowAnimationStyle">@null</item>
+    </style>
+</resources>

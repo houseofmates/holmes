@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+import sys
+import os
+import struct
+from pathlib import Path
+
+MAGIC = b'HOLMES'
+VERSION = 1
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: holmes-view <file.holmes>")
+        sys.exit(1)
+    filepath = Path(sys.argv[1])
+    if not filepath.is_file():
+        print(f"File not found: {filepath}")
+        sys.exit(1)
+    with open(filepath, 'rb') as f:
+        data = f.read()
+    if len(data) < 18 or data[:6] != MAGIC:
+        print("Not a valid .holmes file")
+        sys.exit(1)
+    version = struct.unpack('>H', data[6:8])[0]
+    if version != 1:
+        print(f"Unsupported .holmes version: {version}")
+        sys.exit(1)
+    mime_len = struct.unpack('>H', data[8:10])[0]
+    mime = data[10:10+mime_len].decode('ascii')
+    payload_len = struct.unpack('>Q', data[10+mime_len:10+mime_len+8])[0]
+    payload_start = 10 + mime_len + 8
+    payload = data[payload_start:payload_start+payload_len]
+
+    # Determine extension
+    ext_map = {
+        'image/png': 'png',
+        'image/jpeg': 'jpg',
+        'image/gif': 'gif',
+        'image/webp': 'webp',
+        'image/bmp': 'bmp',
+        'image/svg+xml': 'svg',
+        'video/mp4': 'mp4',
+        'video/webm': 'webm',
+        'video/x-matroska': 'mkv',
+        'video/quicktime': 'mov',
+        'audio/mpeg': 'mp3',
+        'audio/wav': 'wav',
+        'audio/flac': 'flac',
+        'audio/ogg': 'ogg',
+        'audio/aac': 'aac',
+        'application/pdf': 'pdf',
+    }
+    ext = ext_map.get(mime, 'bin')
+
+    # Write to temporary file and open
+    import tempfile
+    import subprocess
+    with tempfile.NamedTemporaryFile(suffix='.' + ext, delete=False) as tmp:
+        tmp.write(payload)
+        tmp_path = tmp.name
+    try:
+        subprocess.run(['xdg-open', tmp_path], check=True)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except:
+            pass
+
+if __name__ == '__main__':
+    main()

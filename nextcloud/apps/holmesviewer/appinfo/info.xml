@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<info>
+  <id>holmesviewer</id>
+  <name>HolmeSviewer</name>
+  <summary>View .holmes container media files in Nextcloud</summary>
+  <description>
+    Registers .holmes as a known MIME type and provides a route that extracts
+    the inner media payload from a .holmes wrapper on the fly.
+  </description>
+  <licence>MIT</licence>
+  <author>hermes</author>
+  <version>1.0.0</version>
+  <namespace>OCA\HolmeSviewer</namespace>
+  <category>multimedia</category>
+</info>

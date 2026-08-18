@@ -1,0 +1,14 @@
+name: conflict-check
+on: [push, pull_request]
+jobs:
+  conflict-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: check for merge conflict markers
+        run: |
+          if grep -rn '^<<<<<<< \|^=======$\|^>>>>>>> ' --include='*.md' --include='*.ts' --include='*.tsx' --include='*.py' --include='*.dart' --include='*.sh' --include='*.json' --include='*.yaml' --include='*.yml' --include='*.toml' --include='*.js' --include='*.jsx' --include='*.css' --include='*.html' . | grep -v node_modules | grep -v '.git/'; then
+            echo "error: git merge conflict markers found"
+            exit 1
+          fi
+          echo "no conflict markers found"

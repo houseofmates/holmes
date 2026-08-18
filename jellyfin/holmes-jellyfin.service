@@ -1,0 +1,19 @@
+# holmes-jellyfin-proxy — systemd --user service
+# install with:  cp holmes-jellyfin.service ~/.config/systemd/user/ && systemctl --user enable --now holmes-jellyfin-proxy
+
+[Unit]
+Description=Holmes Jellyfin Proxy — un-wraps .holmes files for Jellyfin
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/holmes-project/jellyfin
+Environment=PATH=%h/.local/bin:/usr/bin:/bin
+Environment=JELLYFIN_URL=http://localhost:8096
+Environment=HOLMES_PROXY_PORT=5050
+ExecStart=%h/.local/bin/holmes-jellyfin-proxy %h/holmes-project/jellyfin/holmes_jellyfin_proxy.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
